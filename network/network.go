@@ -1,4 +1,4 @@
-package netwok
+package network
 
 import (
 	"context"
