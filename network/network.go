@@ -16,8 +16,8 @@ import (
 
 /* network functions */
 
-// createHost create host and pubsub given privKey
-func createHost(privKey crypto.PrivKey, prot pnet.Protector, port uint16) (*host.Host, error) {
+// CreateHost create create host and pubsub given privKey
+func CreateHost(privKey crypto.PrivKey, prot pnet.Protector, port uint16) (*host.Host, error) {
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)),
 		libp2p.Identity(privKey),
@@ -33,8 +33,8 @@ func createHost(privKey crypto.PrivKey, prot pnet.Protector, port uint16) (*host
 	return &localHost, nil
 }
 
-// create a pubsub for use
-func createPubSub(host host.Host) (*pubsub.PubSub, error) {
+// CreatePubSub create a pubsub for use
+func CreatePubSub(host host.Host) (*pubsub.PubSub, error) {
 	localPubSub, err := pubsub.NewGossipSub(context.Background(), host)
 	if err != nil {
 		return nil, err
@@ -45,9 +45,8 @@ func createPubSub(host host.Host) (*pubsub.PubSub, error) {
 
 /* connection functions */
 
-// create connection to a host
-
-func connectByMultiAddrString(h *host.Host, addr string) error {
+// ConnectByMultiAddrString create connection to a host
+func ConnectByMultiAddrString(h *host.Host, addr string) error {
 	multiAddr := multiaddr.StringCast(addr)
 	pInfo, err := peerstore.InfoFromP2pAddr(multiAddr)
 	if err != nil {
@@ -64,7 +63,8 @@ func connectByMultiAddrString(h *host.Host, addr string) error {
 	return nil
 }
 
-func connectByMultiAddrStrings(h *host.Host, multiAddrs []string) error {
+// ConnectByMultiAddrStrings ...
+func ConnectByMultiAddrStrings(h *host.Host, multiAddrs []string) error {
 	for _, multiAddrString := range multiAddrs {
 		multiAddr := multiaddr.StringCast(multiAddrString)
 		pInfo, err := peerstore.InfoFromP2pAddr(multiAddr)
@@ -83,7 +83,8 @@ func connectByMultiAddrStrings(h *host.Host, multiAddrs []string) error {
 	return errors.New("can not connect to any of addresses")
 }
 
-func connectByMultiAddrs(h *host.Host, multiAddrs []multiaddr.Multiaddr) error {
+// ConnectByMultiAddrs ...
+func ConnectByMultiAddrs(h *host.Host, multiAddrs []multiaddr.Multiaddr) error {
 	for _, multiAddr := range multiAddrs {
 		pInfo, err := peerstore.InfoFromP2pAddr(multiAddr)
 		if err != nil {
@@ -101,11 +102,11 @@ func connectByMultiAddrs(h *host.Host, multiAddrs []multiaddr.Multiaddr) error {
 	return errors.New("can not connect to any of addresses")
 }
 
-// create connections to hosts
-func connectWithPeers(h *host.Host, peers map[string][]string) []string {
+// ConnectWithPeers create connections to hosts
+func ConnectWithPeers(h *host.Host, peers map[string][]string) []string {
 	var connections []string
 	for peer, addr := range peers {
-		err := connectByMultiAddrStrings(h, addr)
+		err := ConnectByMultiAddrStrings(h, addr)
 		if err == nil {
 			connections = append(connections, peer)
 		}

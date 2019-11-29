@@ -166,7 +166,7 @@ func join(p *pubsub.PubSub, channelName string) (*pubsub.Subscription, error) {
 func connect(host *host.Host, memberToAddrs map[string][]string) {
 	for _, addrs := range memberToAddrs {
 		for _, addr := range addrs {
-			netwrok.connectByMultiAddrString(host, addr)
+			network.connectByMultiAddrString(host, addr)
 		}
 	}
 }
