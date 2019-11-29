@@ -34,11 +34,11 @@ func (channel *ChatChannel) handleChatMessage(data json.RawMessage) error {
 		return err
 	}
 
-	var latestID int = info.RecorderInfo[chat.Author].LatestMsgID
+	var latestID int = info.RecordersInfo[chat.Author].LatestMsgID
 	if latestID < chat.ID {
 		latestID = chat.ID
 	}
-	info.RecorderInfo[chat.Author] = syncInfo{
+	info.RecordersInfo[chat.Author] = syncInfo{
 		LatestMsgID:  latestID,
 		LastSyncTime: time.Now().Unix(),
 	}
@@ -62,8 +62,8 @@ func (channel *ChatChannel) handleSyncMessages(data json.RawMessage) error {
 	channel.db.From(channel.channelName).All(&allInfo)
 
 	for _, info := range allInfo {
-		info.RecorderInfo[syncMsg.Sender] = syncInfo{
-			LatestMsgID:  syncMsg.LatestIndexes[info.PeerName],
+		info.RecordersInfo[syncMsg.Sender] = syncInfo{
+			LatestMsgID:  syncMsg.LatestIDs[info.PeerName],
 			LastSyncTime: time.Now().Unix(),
 		}
 		channel.db.From(channel.channelName).Update(&info)

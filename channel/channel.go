@@ -8,7 +8,6 @@ import (
 
 	"github.com/asdine/storm/v3"
 
-	network "github.com/Ziwei-Wei/cyber-rhizome-host/network"
 	host "github.com/libp2p/go-libp2p-core/host"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
@@ -70,7 +69,9 @@ func OpenChannel(
 		state:         "Not Ready",
 	}
 
+	go channel.sync()
 	go channel.listenToPeers()
+	channel.state = "Working"
 
 	return &channel, nil
 }
@@ -90,7 +91,7 @@ func (channel *ChatChannel) Send(data []byte) error {
 		return err
 	}
 
-	var latestID int = info.RecorderInfo[channel.userName].LatestMsgID + 1
+	var latestID int = info.RecordersInfo[channel.userName].LatestMsgID + 1
 	var createdAt int64 = time.Now().Unix()
 
 	var message message = message{
@@ -99,7 +100,7 @@ func (channel *ChatChannel) Send(data []byte) error {
 		Content:   data,
 		CreatedAt: createdAt,
 	}
-	info.RecorderInfo[channel.userName] = syncInfo{
+	info.RecordersInfo[channel.userName] = syncInfo{
 		LatestMsgID:  latestID,
 		LastSyncTime: createdAt,
 	}
@@ -148,26 +149,4 @@ func (channel *ChatChannel) GetPeers() []string {
 		keys = append(keys, key)
 	}
 	return keys
-}
-
-func (channel *ChatChannel) addMember(userName string) error {
-	return nil
-}
-
-// subscribe a channel as topic using pubsub
-func join(p *pubsub.PubSub, channelName string) (*pubsub.Subscription, error) {
-	sub, err := p.Subscribe(channelName)
-	if err != nil {
-		return nil, err
-	}
-	return sub, nil
-}
-
-// get connection with all the peers in the network
-func connect(host *host.Host, memberToAddrs map[string][]string) {
-	for _, addrs := range memberToAddrs {
-		for _, addr := range addrs {
-			network.ConnectByMultiAddrString(host, addr)
-		}
-	}
 }

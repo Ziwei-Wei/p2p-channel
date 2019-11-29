@@ -5,54 +5,61 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
+	network "github.com/Ziwei-Wei/cyber-rhizome-host/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 )
 
-func (channel *chatChannel) syncChannel(limit int) {
-	var allSync []userMessagesIndex
-	channel.db.From(channel.channelName).All(&allSync)
+// sync channel every 5 minute
+func (channel *ChatChannel) sync() {
+	for {
+		channel.syncChannel(1000)
+		time.Sleep(5 * time.Minute)
+	}
+}
 
-	countChan := make(chan int)
+// sync channel msgs with a buffer limit
+func (channel *ChatChannel) syncChannel(limit int) {
+	var allInfo []peerMessageInfo
+	channel.db.From(channel.channelName).All(&allInfo)
+
+	counter := make(chan int)
 	msgCount := 0
-	for _, sync := range allSync {
-		channel.syncUser(&sync, countChan)
-		msgCount += <-countChan
+	for _, sync := range allInfo {
+		go channel.syncPeer(&sync, counter)
+		msgCount += <-counter
 		if msgCount > limit {
 			for msgCount > limit/2 {
-				msgCount += <-countChan
+				msgCount += <-counter
 			}
 		}
 	}
 
 }
 
-func (channel *chatChannel) syncUser(userInfo *userMessagesIndex, countChan chan int) {
-	if userInfo.userName != channel.userName {
-		var missingMsgs []uint
-		for index, missing := range userInfo.msgDict {
+func (channel *ChatChannel) syncPeer(peerInfo *peerMessageInfo, counter chan int) {
+	if peerInfo.PeerName != channel.userName {
+		var missingMsgIDs []int
+		for index, missing := range peerInfo.MsgDict {
 			if missing == true {
-				missingMsgs = append(missingMsgs, index)
+				missingMsgIDs = append(missingMsgIDs, index)
 			}
 		}
 
-		if len(missingMsgs) > 0 {
-			countChan <- len(missingMsgs)
-			var peerMsgInfo peerMessageInfo
-			channel.db.Find("userName", userInfo.userName, &peerMsgInfo)
-			var syncPeers []string
-			for _, info := range peerMsgInfo.syncInfo {
-				if info.recorder == userInfo.userName ||
-					info.latestMsgID >= userInfo.latestMsgID &&
-						info.msgCount >= uint(len(userInfo.msgDict)) &&
-						time.Now().Unix()-info.lastSyncTime <= 10*unixMinute {
-					syncPeers = append(syncPeers, info.recorder)
+		if len(missingMsgIDs) > 0 {
+			counter <- len(missingMsgIDs)
+			var peersToSync []string
+			for peer, recorderInfo := range peerInfo.RecordersInfo {
+				if recorderInfo.LatestMsgID >= peerInfo.RecordersInfo[channel.userName].LatestMsgID &&
+					time.Now().Unix()-recorderInfo.LastSyncTime <= 10*unixMinute {
+					peersToSync = append(peersToSync, peer)
 				}
 			}
 
-			for _, peerName := range syncPeers {
-				err := connectByMultiAddrStrings(channel.host, channel.memberToAddrs[peerName])
+			for _, peerName := range peersToSync {
+				err := network.ConnectByMultiAddrStrings(channel.host, channel.memberToAddrs[peerName])
 				if err != nil {
 					continue
 				}
@@ -63,8 +70,8 @@ func (channel *chatChannel) syncUser(userInfo *userMessagesIndex, countChan chan
 				}
 				rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 				syncReq := syncRequest{
-					userName:          userInfo.userName,
-					missingMsgIndexes: missingMsgs,
+					UserName:          peerInfo.PeerName,
+					MissingMsgIndexes: missingMsgIDs,
 				}
 				data, err := json.Marshal(&syncReq)
 				if err != nil {
@@ -86,8 +93,8 @@ func (channel *chatChannel) syncUser(userInfo *userMessagesIndex, countChan chan
 					if err != nil {
 						print(err)
 					}
-					for _, chat := range syncRes.missingMsgs {
-						channel.addChat(chat)
+					for _, msg := range syncRes.MissingMsgs {
+						channel.saveMessage(msg)
 					}
 					break
 				}
@@ -96,65 +103,89 @@ func (channel *chatChannel) syncUser(userInfo *userMessagesIndex, countChan chan
 				stream.Close()
 				break
 			}
-			countChan <- -len(missingMsgs)
+			counter <- -len(missingMsgIDs)
 		}
 	}
 }
 
-func (channel *chatChannel) sendSyncInfo(syncType string) {
+func (channel *ChatChannel) sendSyncInfo(syncType string) {
 	switch syncType {
 	case "Messages":
-		var allSync []userMessagesIndex
-		channel.db.From(channel.channelName).All(&allSync)
+		var allSync []peerMessageInfo
+		err := channel.db.From(channel.channelName).All(&allSync)
+		if err != nil {
+			log.Println(err)
+			break
+		}
 
-		var latestIndexes map[string]uint
+		var LatestIDs map[string]int
 		for _, sync := range allSync {
-			latestIndexes[sync.userName] = sync.latestMsgID
+			LatestIDs[sync.PeerName] = sync.RecordersInfo[channel.userName].LatestMsgID
 		}
 
 		syncMsgs := syncMessages{
-			sender:        channel.userName,
-			latestIndexes: latestIndexes,
+			Sender:    channel.userName,
+			LatestIDs: LatestIDs,
 		}
 
 		data, err := json.Marshal(&syncMsgs)
 		if err != nil {
-			println(err)
+			log.Println(err)
+			break
 		}
 
-		message := message{
-			msgType: "syncMessages",
-			data:    data,
+		message := peerMessage{
+			MsgType: "syncMessages",
+			Data:    data,
 		}
 
-		channel.sendMessage(message)
+		channel.sendPeerMessage(message)
 		break
 
 	case "Members":
 		var allSync channelInfo
-		channel.db.One("channelName", channel.channelName, &allSync)
+		err := channel.db.One("channelName", channel.channelName, &allSync)
+		if err != nil {
+			log.Println(err)
+			break
+		}
 
 		syncMsgs := syncMembers{
-			sender:        channel.userName,
-			memberToPID:   allSync.memberToPID,
-			memberToAddrs: allSync.memberToAddrs,
+			Sender:        channel.userName,
+			MemberToPID:   allSync.MemberToPID,
+			MemberToAddrs: allSync.MemberToAddrs,
 		}
 
 		data, err := json.Marshal(&syncMsgs)
 		if err != nil {
-			println(err)
+			log.Println(err)
+			break
 		}
 
-		message := message{
-			msgType: "syncMembers",
-			data:    data,
+		message := peerMessage{
+			MsgType: "syncMembers",
+			Data:    data,
 		}
 
-		channel.sendMessage(message)
+		channel.sendPeerMessage(message)
 		break
 	default:
 		err := errors.New("sync type is not supported")
 		println(err)
 	}
 
+}
+
+func (channel *ChatChannel) sendPeerMessage(message peerMessage) error {
+	data, err := json.Marshal(&message)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	err = channel.pubsub.Publish(channel.channelName, data)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	return nil
 }

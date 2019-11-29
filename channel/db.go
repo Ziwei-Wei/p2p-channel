@@ -17,9 +17,9 @@ type channelInfo struct {
 
 // one per peer, record local messages in the channel
 type peerMessageInfo struct {
-	PeerName     string `storm:"id"`
-	MsgDict      map[int]bool
-	RecorderInfo map[string]syncInfo
+	PeerName      string `storm:"id"`
+	MsgDict       map[int]bool
+	RecordersInfo map[string]syncInfo
 }
 
 type syncInfo struct {
@@ -81,8 +81,8 @@ type syncMembers struct {
 
 // sync every 5 minute, or when user log in
 type syncMessages struct {
-	Sender        string
-	LatestIndexes map[string]int
+	Sender    string
+	LatestIDs map[string]int
 }
 
 /* doc */
