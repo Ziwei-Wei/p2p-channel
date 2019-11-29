@@ -3,39 +3,26 @@ package channel
 import (
 	"context"
 	"encoding/json"
-	"log"
-	"net/http"
 )
 
-func (channel *chatChannel) listenToGUI(w http.ResponseWriter, r *http.Request) {
-	if channel.ready != true {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Print("upgrade:", err)
-			return
-		}
-		channel.gui = conn
-	}
-}
-
-func (channel *chatChannel) listenToPeers() error {
+func (channel *ChatChannel) listenToPeers() error {
 	for {
 		// listen
 		msg, _ := channel.sub.Next(context.Background())
 
 		// unmarshall
-		var message message
+		var message peerMessage
 		json.Unmarshal(msg.GetData(), &message)
 
-		switch message.msgType {
+		switch message.MsgType {
 		case "chatMessage":
-			go channel.handleChatMessage(message.data)
+			go channel.handleChatMessage(message.Data)
 			break
 		case "syncMessages":
-			go channel.handleSyncMessages(message.data)
+			go channel.handleSyncMessages(message.Data)
 			break
 		case "syncMembers":
-			go channel.handleSyncMembers(message.data)
+			go channel.handleSyncMembers(message.Data)
 			break
 		default:
 			println("message type is not supported")

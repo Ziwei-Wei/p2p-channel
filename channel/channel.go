@@ -8,6 +8,7 @@ import (
 
 	"github.com/asdine/storm/v3"
 
+	network "github.com/Ziwei-Wei/cyber-rhizome-host/network"
 	host "github.com/libp2p/go-libp2p-core/host"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
@@ -69,7 +70,7 @@ func OpenChannel(
 		state:         "Not Ready",
 	}
 
-	go ChatChannel.listenToPeers()
+	go channel.listenToPeers()
 
 	return &channel, nil
 }
@@ -166,7 +167,7 @@ func join(p *pubsub.PubSub, channelName string) (*pubsub.Subscription, error) {
 func connect(host *host.Host, memberToAddrs map[string][]string) {
 	for _, addrs := range memberToAddrs {
 		for _, addr := range addrs {
-			network.connectByMultiAddrString(host, addr)
+			network.ConnectByMultiAddrString(host, addr)
 		}
 	}
 }

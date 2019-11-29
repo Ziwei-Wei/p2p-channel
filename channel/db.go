@@ -50,8 +50,8 @@ type doc struct {
 }
 
 /* communication between channels */
-// data sent between users
-type channelMessage struct {
+// data sent between users in the channel
+type peerMessage struct {
 	MsgType string
 	Data    json.RawMessage
 }
@@ -86,9 +86,3 @@ type syncMessages struct {
 }
 
 /* doc */
-
-// state: INPUTTING, INSERT, DELETE
-type syncDocWithPeer struct {
-	action            docMessage
-	userLatestIndexes map[string]int
-}

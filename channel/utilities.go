@@ -29,8 +29,8 @@ func (channel *ChatChannel) updatePeerLatestMsgID(peerName string, newMsgID int,
 	return nil
 }
 
-func (channel *ChatChannel) getAllLatestMsgIDs() ([]localMessageInfo, error) {
-	var info []localMessageInfo
+func (channel *ChatChannel) getAllLatestMsgIDs() ([]peerMessageInfo, error) {
+	var info []peerMessageInfo
 	err := channel.db.
 		From(channel.channelName).
 		All(&info)

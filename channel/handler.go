@@ -3,78 +3,112 @@ package channel
 import (
 	"bufio"
 	"encoding/json"
+	"log"
 	"time"
 
 	"github.com/libp2p/go-libp2p-core/network"
 )
 
-func (channel *chatChannel) handleChatMessage(data json.RawMessage) error {
+func (channel *ChatChannel) handleChatMessage(data json.RawMessage) error {
+	db, err := channel.db.Begin(true)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	defer db.Rollback()
+
 	// save chat to db
-	var chat chatMessage
+	var chat message
 	json.Unmarshal(data, &chat)
-	channel.db.From(channel.channelName).From(chat.author).Save(&chat)
-
-	// sync to db
-	var sync userMessagesIndex
-	channel.db.From(channel.channelName).Find("userName", chat.author, &sync)
-	if sync.latestMsgID < chat.id {
-		sync.latestMsgID = chat.id
+	db.From(channel.channelName).From(chat.Author).Save(&chat)
+	if err != nil {
+		log.Println(err)
+		return err
 	}
-	sync.msgDict[chat.id] = true
-	channel.db.From(channel.channelName).Update(&sync)
 
-	// send to gui
-	channel.mutex.Lock()
-	channel.gui.WriteJSON(&chat)
-	channel.mutex.Unlock()
+	// save info to db
+	var info peerMessageInfo
+	db.From(channel.channelName).Find("PeerName", chat.Author, &info)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	var latestID int = info.RecorderInfo[chat.Author].LatestMsgID
+	if latestID < chat.ID {
+		latestID = chat.ID
+	}
+	info.RecorderInfo[chat.Author] = syncInfo{
+		LatestMsgID:  latestID,
+		LastSyncTime: time.Now().Unix(),
+	}
+	info.MsgDict[chat.ID] = true
+
+	db.From(channel.channelName).Update(&info)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
 	return nil
 }
 
-func (channel *chatChannel) handleSyncMessages(data json.RawMessage) error {
-	var syncMsgs syncMessages
-	json.Unmarshal(data, &syncMsgs)
+// !!!!!!!!!!!!!!! bug may be here
+func (channel *ChatChannel) handleSyncMessages(data json.RawMessage) error {
+	var syncMsg syncMessages
+	json.Unmarshal(data, &syncMsg)
 
-	var allSync []userMessagesIndex
-	channel.db.From(channel.channelName).All(&allSync)
+	var allInfo []peerMessageInfo
+	channel.db.From(channel.channelName).All(&allInfo)
 
-	for _, sync := range allSync {
-		for i := sync.latestMsgID + 1; i <= syncMsgs.latestIndexes[sync.userName]; i++ {
-			sync.msgDict[i] = false
+	for _, info := range allInfo {
+		info.RecorderInfo[syncMsg.Sender] = syncInfo{
+			LatestMsgID:  syncMsg.LatestIndexes[info.PeerName],
+			LastSyncTime: time.Now().Unix(),
 		}
-		channel.db.From(channel.channelName).Save(&sync)
+		channel.db.From(channel.channelName).Update(&info)
 	}
 
 	return nil
 }
 
-func (channel *chatChannel) handleSyncMembers(data json.RawMessage) error {
-	var syncInfo syncMembers
-	json.Unmarshal(data, &syncInfo)
+func (channel *ChatChannel) handleSyncMembers(data json.RawMessage) error {
+	var syncMsg syncMembers
+	json.Unmarshal(data, &syncMsg)
 
 	var localInfo channelInfo
-	channel.db.One("channelName", channel.channelName, &localInfo)
+	err := channel.db.One("ChannelName", channel.channelName, &localInfo)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
 
-	if len(localInfo.memberToPID) < len(syncInfo.memberToPID) {
-		for userName, peerID := range syncInfo.memberToPID {
-			if localInfo.memberToPID[userName] == "" {
-				localInfo.memberToPID[userName] = peerID
+	if len(localInfo.MemberToPID) < len(syncMsg.MemberToPID) {
+		for UserName, peerID := range syncMsg.MemberToPID {
+			if localInfo.MemberToPID[UserName] == "" {
+				localInfo.MemberToPID[UserName] = peerID
 			}
 		}
-		for userName, addrs := range syncInfo.memberToAddrs {
-			if localInfo.memberToAddrs[userName] == nil {
-				localInfo.memberToAddrs[userName] = addrs
+		for UserName, addrs := range syncMsg.MemberToAddrs {
+			if localInfo.MemberToAddrs[UserName] == nil {
+				localInfo.MemberToAddrs[UserName] = addrs
 			}
 		}
 	}
-	localInfo.memberToPID[syncInfo.sender] = syncInfo.memberToPID[syncInfo.sender]
-	localInfo.memberToAddrs[syncInfo.sender] = syncInfo.memberToAddrs[syncInfo.sender]
+	localInfo.MemberToPID[syncMsg.Sender] = syncMsg.MemberToPID[syncMsg.Sender]
+	localInfo.MemberToAddrs[syncMsg.Sender] = syncMsg.MemberToAddrs[syncMsg.Sender]
 
+	err = channel.db.Update(localInfo)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
 	return nil
 }
 
-func (channel *chatChannel) handleSyncStream(stream network.Stream) {
+func (channel *ChatChannel) handleSyncStream(stream network.Stream) {
 	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-	var missingMsgs []chatMessage
+	var missingMsgs []message
 	TTL := time.Now().Add(time.Minute)
 	for {
 		if time.Now().After(TTL) {
@@ -92,9 +126,9 @@ func (channel *chatChannel) handleSyncStream(stream network.Stream) {
 			print(err)
 			continue
 		}
-		for _, index := range req.missingMsgIndexes {
-			var chat chatMessage
-			err := channel.db.From(req.channelName).From(req.userName).Find("id", index, &chat)
+		for _, index := range req.MissingMsgIndexes {
+			var chat message
+			err := channel.db.From(req.ChannelName).From(req.UserName).Find("id", index, &chat)
 			if err != nil {
 				print(err)
 				continue
@@ -102,9 +136,9 @@ func (channel *chatChannel) handleSyncStream(stream network.Stream) {
 			missingMsgs = append(missingMsgs, chat)
 		}
 		var res syncResponse = syncResponse{
-			channelName: req.channelName,
-			userName:    req.userName,
-			missingMsgs: missingMsgs,
+			ChannelName: req.ChannelName,
+			UserName:    req.UserName,
+			MissingMsgs: missingMsgs,
 		}
 		resRaw, err := json.Marshal(&res)
 		resRaw = append(resRaw, '\n')
