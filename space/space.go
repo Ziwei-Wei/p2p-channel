@@ -5,15 +5,15 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/asdine/storm/v3"
-	"github.com/beevik/ntp"
 	"github.com/gorilla/websocket"
 
+	channel "github.com/Ziwei-Wei/cyber-rhizome-host/channel"
+	"github.com/Ziwei-Wei/cyber-rhizome-host/keygen"
+	"github.com/Ziwei-Wei/cyber-rhizome-host/network"
 	crypto "github.com/libp2p/go-libp2p-core/crypto"
 	host "github.com/libp2p/go-libp2p-core/host"
-	pnet "github.com/libp2p/go-libp2p-pnet"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
@@ -35,64 +35,66 @@ import (
 
 // will go into caching mode when no peer in the channel is online
 
-/* RhizomeCore */
+/* RhizomeSpace */
 
-// RhizomeCore main cordinator
-type RhizomeCore struct {
+// RhizomeSpace main cordinator
+type RhizomeSpace struct {
 	ready    bool
 	port     uint16
 	space    string
 	user     string
-	host     *host.Host
+	host     host.Host
 	pubsub   *pubsub.PubSub
-	channels map[string]*Channel
+	channels map[string]channel.Channel
 	db       *storm.DB
 	gui      *websocket.Conn
 	mutex    sync.Mutex
 }
 
-// NewRhizomeCore init the RhizomeCore
-func NewRhizomeCore() *RhizomeCore {
-	return &RhizomeCore{}
+// NewRhizomeSpace init the RhizomeSpace
+func NewRhizomeSpace() *RhizomeSpace {
+	return &RhizomeSpace{}
 }
 
 // Start the service
-func (core *RhizomeCore) Start(_port uint16) error {
+func (space *RhizomeSpace) Start(_port uint16, dbPath string) error {
 	// connect to local data base
-	db, err := storm.Open("db/rhizome.db")
+	db, err := storm.Open(dbPath)
 	if err != nil {
 		return err
 	}
-	core.db = db
+	space.db = db
 
 	// start gui websocket
-	http.HandleFunc("/core", func(w http.ResponseWriter, r *http.Request) {
-		core.listenToGUI(w, r)
+	http.HandleFunc("/space", func(w http.ResponseWriter, r *http.Request) {
+		space.listenToGUI(w, r)
 	})
-	core.ready = true
+	space.ready = true
 	return nil
 }
 
-// LoginUser check local db for saved user
-func (core *RhizomeCore) LoginUser(userName string) {}
-
 // LoginSpace login using private key, name, and corresponding network protector
-func (core *RhizomeCore) LoginSpace(spaceName string, privKey crypto.PrivKey, protKey string) error {
-	binaryProt := protStringToBinary(protKey)
-	prot, err := pnet.NewV1ProtectorFromBytes(&binaryProt)
+func (space *RhizomeSpace) LoginSpace(spaceName string, userName string, protString string) error {
+	protKey, err := keygen.StringToProt(protString)
 	if err != nil {
+		log.Println(err)
+		return err
+	}
+	privKey, err := keygen.CreatePrivKey(userName, protString)
+	if err != nil {
+		log.Println(err)
 		return err
 	}
 
 	// read localDB check if user exist
 	var currSpace spaceInfo
 	var existUser bool
-	err = core.db.One("spaceName", spaceName, &currSpace)
+	err = space.db.One("spaceName", spaceName, &currSpace)
 	if err != nil {
 		return err
 	}
 	for member := range currSpace.memberToAddrs {
-		if member == core.user {
+		if member == space.user {
 			existUser = true
 			break
 		}
@@ -101,33 +103,30 @@ func (core *RhizomeCore) LoginSpace(spaceName string, privKey crypto.PrivKey, pr
 	/* if exist */
 	if existUser == true {
 		// 1  create host
-		host, err := createHost(privKey, prot, core.port)
+		host, err := network.CreateHost(privKey, protKey, space.port)
 		if err != nil {
 			return err
 		}
 
 		// 2  create pubsub
-		pubsub, err := createPubSub(*host)
+		pubsub, err := network.CreatePubSub(host)
 		if err != nil {
 			return err
 		}
 
 		// 3 open channels
-		for channel, channelType := range currSpace.channelToType {
-			currChannel, err := openChannel(channel, core.user, channelType, host, pubsub, core.db, core.gui, &core.mutex)
+		for cName, cType := range currSpace.channelToType {
+			curr, err := channel.OpenChannel(cName, space.user, cType, space.db, host, pubsub)
 			if err != nil {
 				log.Println(err)
 				continue
 			}
-			core.channels[channel] = currChannel
+			space.channels[cName] = curr
 		}
 
-		// 4  connect to known hosts in space
-		connectWithPeers(host, currSpace.memberToAddrs)
-
-		// 5  finish
-		core.host = host
-		core.pubsub = pubsub
+		// 4  finish
+		space.host = host
+		space.pubsub = pubsub
 
 		return nil
 	}
@@ -135,22 +134,25 @@ func (core *RhizomeCore) LoginSpace(spaceName string, privKey crypto.PrivKey, pr
 	return errors.New("user doesn't exist")
 }
 
-// CreateSpace create a space with a name
-func (core *RhizomeCore) CreateSpace(spaceName string, privKey crypto.PrivKey) (string, error) {
-	if core.ready != true {
-		return "", errors.New("start rhizome core first")
+//!!!!!!!!!!!!
+// CreateSpace will create a space
+func (space *RhizomeSpace) CreateSpace(spaceName string, privKey crypto.PrivKey) (string, error) {
+	if space.ready != true {
+		return "", errors.New("start rhizome spacefirst")
 	}
 
 	// create protector
-	stringProt, err := createStringProt()
+	protString, err := keygen.CreateProtString()
 	if err != nil {
 		return "", err
 	}
-	binaryProt := protStringToBinary(stringProt)
-	prot, err := pnet.NewV1ProtectorFromBytes(&binaryProt)
+	prot, err := keygen.StringToProt(protString)
+	if err != nil {
+		return "", err
+	}
 
 	// create host to get curr multiaddress
-	host, err := createHost(privKey, prot, core.port)
+	host, err := createHost(privKey, prot, space.port)
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +165,7 @@ func (core *RhizomeCore) CreateSpace(spaceName string, privKey crypto.PrivKey) (
 		spaceName:     spaceName,
 		memberToAddrs: memberToAddrs,
 	}
-	err = core.localDB.Save(&newSpace)
+	err = space.localDB.Save(&newSpace)
 	if err != nil {
 		return "", err
 	}
@@ -174,7 +176,7 @@ func (core *RhizomeCore) CreateSpace(spaceName string, privKey crypto.PrivKey) (
 		ContentType: "space",
 		Content:     newSpace,
 	}
-	err = core.orbitDB.WriteJSON(&newReq)
+	err = space.orbitDB.WriteJSON(&newReq)
 	if err != nil {
 		return "", err
 	}
@@ -182,40 +184,30 @@ func (core *RhizomeCore) CreateSpace(spaceName string, privKey crypto.PrivKey) (
 	return stringProt, nil
 }
 
-func joinChannels(ps *pubsub.PubSub, channels []string) (map[string]*pubsub.Subscription, error) {
-	var subscriptions map[string]*pubsub.Subscription
-	for _, channel := range channels {
-		sub, err := joinChannel(ps, channel)
-		if err != nil {
-			return nil, err
-		}
-		subscriptions[channel] = sub
-	}
-	return subscriptions, nil
+//!!!!!!!!!!!!
+// JoinSpace will join an existing space with a referer
+func (space *RhizomeSpace) JoinSpace(spaceName string, privKey crypto.PrivKey) {}
+
+// End end the service
+func (space *RhizomeSpace) End() error {
+	space.db.Close()
+	return nil
+}
+
+// Send will send message to given channel in current space
+func (space *RhizomeSpace) Send(channel string, message string) error {
+	return nil
 }
 
 // Logout logout current space
-func (core *RhizomeCore) Logout() error {
-	return nil
+func (space *RhizomeSpace) Logout() {
 }
 
-// End end the service
-func (core *RhizomeCore) End() error {
-	core.localDB.Close()
-	return nil
-}
-
-func (core *RhizomeCore) syncTime() error {
-	ntpTime, err := ntp.Time("time.apple.com")
-	if err != nil {
-		return err
+// GetChannels get current peers in the channel
+func (space *RhizomeSpace) GetChannels() []string {
+	keys := make([]string, 0, len(space.channels))
+	for key := range space.channels {
+		keys = append(keys, key)
 	}
-	currTime := time.Now()
-	core.timeOffset = ntpTime.UnixNano() - currTime.UnixNano()
-	return nil
-}
-
-// SendMessage will send message to given channel in current space
-func (core *RhizomeCore) SendMessage(message string, channel string) error {
-	return nil
+	return keys
 }

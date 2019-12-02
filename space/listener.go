@@ -1,4 +1,4 @@
-package spce
+package space
 
 import (
 	"encoding/json"
@@ -14,7 +14,7 @@ var upgrader = websocket.Upgrader{
 	EnableCompression: true,
 }
 
-func (core *RhizomeCore) listenToGUI(w http.ResponseWriter, r *http.Request) {
+func (core *RhizomeSpace) listenToGUI(w http.ResponseWriter, r *http.Request) {
 	if core.ready != true {
 		var upgrader = websocket.Upgrader{}
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -26,7 +26,7 @@ func (core *RhizomeCore) listenToGUI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (core *RhizomeCore) reader(conn *websocket.Conn) error {
+func (core *RhizomeSpace) reader(conn *websocket.Conn) error {
 	defer conn.Close()
 	for {
 		var req message

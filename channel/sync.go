@@ -4,31 +4,35 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"log"
+	"sort"
 	"time"
 
-	network "github.com/Ziwei-Wei/cyber-rhizome-host/network"
-	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/Ziwei-Wei/cyber-rhizome-host/msglist"
+	util "github.com/Ziwei-Wei/cyber-rhizome-host/utility"
 )
 
+const unixMinute int64 = 60
+
 // sync channel every 5 minute
-func (channel *ChatChannel) sync() {
+func (c *ChatChannel) syncChannel(ctx context.Context) {
 	for {
-		channel.syncChannel(1000)
-		time.Sleep(5 * time.Minute)
+		select {
+		case <-ctx.Done():
+		default:
+			go c.sendSyncInfo()
+			go c.sendSyncMsgInfoToPeers(100)
+			time.Sleep(5 * time.Minute)
+		}
 	}
 }
 
 // sync channel msgs with a buffer limit
-func (channel *ChatChannel) syncChannel(limit int) {
-	var allInfo []peerMessageInfo
-	channel.db.From(channel.channelName).All(&allInfo)
-
+func (c *ChatChannel) sendSyncMsgInfoToPeers(limit int) {
 	counter := make(chan int)
 	msgCount := 0
-	for _, sync := range allInfo {
-		go channel.syncPeer(&sync, counter)
+	for _, list := range c.peerIDToMsgList {
+		go c.sendSyncMsgInfoToPeer(list, counter)
 		msgCount += <-counter
 		if msgCount > limit {
 			for msgCount > limit/2 {
@@ -39,39 +43,62 @@ func (channel *ChatChannel) syncChannel(limit int) {
 
 }
 
-func (channel *ChatChannel) syncPeer(peerInfo *peerMessageInfo, counter chan int) {
-	if peerInfo.PeerName != channel.userName {
-		var missingMsgIDs []int
-		for index, missing := range peerInfo.MsgDict {
-			if missing == true {
-				missingMsgIDs = append(missingMsgIDs, index)
-			}
+func (c *ChatChannel) sendSyncMsgInfoToPeer(list *msglist.PeerMessageList, counter chan int) error {
+	if list.GetPeerID() != c.userID {
+		missedMsgIDs, err := list.GetMissedMsgIDs()
+
+		if err != nil {
+			return err
 		}
 
-		if len(missingMsgIDs) > 0 {
-			counter <- len(missingMsgIDs)
-			var peersToSync []string
-			for peer, recorderInfo := range peerInfo.RecordersInfo {
-				if recorderInfo.LatestMsgID >= peerInfo.RecordersInfo[channel.userName].LatestMsgID &&
-					time.Now().Unix()-recorderInfo.LastSyncTime <= 10*unixMinute {
-					peersToSync = append(peersToSync, peer)
+		if len(missedMsgIDs) > 0 {
+			counter <- len(missedMsgIDs)
+			latencyToPeer := make(map[int]string)
+			latencies := make([]int, len(c.peerIDToMsgList))
+			// find 2 peer with least latency + author
+			for id := range c.peerIDToMsgList {
+				peerID, _ := util.StringToPeerID(id)
+				t := c.host.Peerstore().LatencyEWMA(peerID).Milliseconds()
+				latencies = append(latencies, int(t))
+				latencyToPeer[int(t)] = id
+			}
+
+			count := 1
+			max := 3
+			sort.Ints(latencies)
+			peerIDToSync := make([]string, max)
+			peerIDToSync[0] = list.GetPeerID()
+			for i := 0; i < len(latencies); i++ {
+				if count < max {
+					peerIDToSync[i+1] = latencyToPeer[latencies[i]]
+					count++
 				}
 			}
 
-			for _, peerName := range peersToSync {
-				err := network.ConnectByMultiAddrStrings(channel.host, channel.memberToAddrs[peerName])
+			for _, peerIDString := range peerIDToSync {
+				err := c.connectPeer(util.StringsToMultiAddrs(list.P2PAddrs))
 				if err != nil {
+					log.Printf("Error: %v at syncWithPeer, connectPeer", err)
 					continue
 				}
 
-				stream, err := (*channel.host).NewStream(context.Background(), peer.ID(channel.memberToPID[peerName]))
+				peerID, err := util.StringToPeerID(peerIDString)
 				if err != nil {
+					log.Printf("Error: %v at syncWithPeer, StringToPeerID(peerIDString)", err)
 					continue
 				}
+
+				stream, err := c.host.NewStream(context.Background(), peerID)
+				if err != nil {
+					log.Printf("Error: %v at syncWithPeer, NewStream(context.Background(), peerID)", err)
+					continue
+				}
+
 				rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 				syncReq := syncRequest{
-					UserName:          peerInfo.PeerName,
-					MissingMsgIndexes: missingMsgIDs,
+					ChannelName:   c.channelName,
+					TargerID:      list.GetPeerID(),
+					MissingMsgIDs: missedMsgIDs,
 				}
 				data, err := json.Marshal(&syncReq)
 				if err != nil {
@@ -93,9 +120,7 @@ func (channel *ChatChannel) syncPeer(peerInfo *peerMessageInfo, counter chan int
 					if err != nil {
 						print(err)
 					}
-					for _, msg := range syncRes.MissingMsgs {
-						channel.saveMessage(msg)
-					}
+					list.Add(syncRes.MissingMsg)
 					break
 				}
 				rw.Write([]byte{'\n'})
@@ -103,88 +128,72 @@ func (channel *ChatChannel) syncPeer(peerInfo *peerMessageInfo, counter chan int
 				stream.Close()
 				break
 			}
-			counter <- -len(missingMsgIDs)
+			counter <- -len(missedMsgIDs)
 		}
+	}
+	return nil
+}
+
+// should be dynamic in future
+func (c *ChatChannel) sendHeartBeat() {
+	for {
+		c.sendStateInfo()
+		time.Sleep(5 * time.Second)
 	}
 }
 
-func (channel *ChatChannel) sendSyncInfo(syncType string) {
-	switch syncType {
-	case "Messages":
-		var allSync []peerMessageInfo
-		err := channel.db.From(channel.channelName).All(&allSync)
-		if err != nil {
-			log.Println(err)
-			break
-		}
-
-		var LatestIDs map[string]int
-		for _, sync := range allSync {
-			LatestIDs[sync.PeerName] = sync.RecordersInfo[channel.userName].LatestMsgID
-		}
-
-		syncMsgs := syncMessages{
-			Sender:    channel.userName,
-			LatestIDs: LatestIDs,
-		}
-
-		data, err := json.Marshal(&syncMsgs)
-		if err != nil {
-			log.Println(err)
-			break
-		}
-
-		message := peerMessage{
-			MsgType: "syncMessages",
-			Data:    data,
-		}
-
-		channel.sendPeerMessage(message)
-		break
-
-	case "Members":
-		var allSync channelInfo
-		err := channel.db.One("channelName", channel.channelName, &allSync)
-		if err != nil {
-			log.Println(err)
-			break
-		}
-
-		syncMsgs := syncMembers{
-			Sender:        channel.userName,
-			MemberToPID:   allSync.MemberToPID,
-			MemberToAddrs: allSync.MemberToAddrs,
-		}
-
-		data, err := json.Marshal(&syncMsgs)
-		if err != nil {
-			log.Println(err)
-			break
-		}
-
-		message := peerMessage{
-			MsgType: "syncMembers",
-			Data:    data,
-		}
-
-		channel.sendPeerMessage(message)
-		break
-	default:
-		err := errors.New("sync type is not supported")
-		println(err)
+func (c *ChatChannel) sendStateInfo() error {
+	state := syncRawState{
+		State: c.state,
 	}
-
-}
-
-func (channel *ChatChannel) sendPeerMessage(message peerMessage) error {
-	data, err := json.Marshal(&message)
+	data, err := json.Marshal(state)
 	if err != nil {
-		log.Println(err)
+		log.Printf("error: %v at sendStateInfo, Marshal(state)", err)
 		return err
 	}
-	err = channel.pubsub.Publish(channel.channelName, data)
+	err = c.sendPeerMessage(pubsubRawMessage{
+		MsgType: "State",
+		Data:    data,
+	})
 	if err != nil {
-		log.Println(err)
+		log.Printf("error: %v at sendStateInfo, sendPeerMessage", err)
+		return err
+	}
+	return nil
+}
+
+func (c *ChatChannel) sendSyncInfo() error {
+	list := c.peerIDToMsgList[c.userID]
+	syncMsg := syncRawMessage{
+		TargerID:     list.GetPeerID(),
+		TargetName:   list.PeerName,
+		P2pAddrs:     list.P2PAddrs,
+		LastSyncTime: list.LastSyncTime,
+		LatestMsgID:  list.LatestMsgID,
+	}
+	data, err := json.Marshal(&syncMsg)
+	if err != nil {
+		log.Printf("error: %v at sendSyncInfo, Marshal(&message)", err)
+		return err
+	}
+	msg := pubsubRawMessage{
+		MsgType: syncMESSAGE,
+		Data:    data,
+	}
+	c.sendPeerMessage(msg)
+	return nil
+}
+
+func (c *ChatChannel) sendPeerMessage(message pubsubRawMessage) error {
+	data, err := json.Marshal(&message)
+	if err != nil {
+		log.Printf("error: %v at sendPeerMessage, Marshal(&message)", err)
+		return err
+	}
+
+	err = c.pubsub.Publish(c.channelName, data)
+	if err != nil {
+		log.Printf("error: %v at sendPeerMessage, Publish(c.cName, data)", err)
 		return err
 	}
 	return nil

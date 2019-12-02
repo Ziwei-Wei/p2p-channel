@@ -1,19 +1,14 @@
 package channel
 
 import (
+	"context"
+	"errors"
 	"log"
-	"time"
 
-	network "github.com/Ziwei-Wei/cyber-rhizome-host/network"
-	host "github.com/libp2p/go-libp2p-core/host"
+	util "github.com/Ziwei-Wei/cyber-rhizome-host/utility"
+	"github.com/libp2p/go-libp2p-core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
-)
-
-const (
-	unixWeek   int64 = 604800
-	unixDay    int64 = 86400
-	unixHour   int64 = 3600
-	unixMinute int64 = 60
+	"github.com/multiformats/go-multiaddr"
 )
 
 // subscribe a channel as topic using pubsub
@@ -26,79 +21,29 @@ func join(p *pubsub.PubSub, channelName string) (*pubsub.Subscription, error) {
 }
 
 // get connection with all the peers in the network
-func connect(host *host.Host, memberToAddrs map[string][]string) {
-	for _, addrs := range memberToAddrs {
-		for _, addr := range addrs {
-			network.ConnectByMultiAddrString(host, addr)
+func (c *ChatChannel) connectAllPeers() {
+	for peerID, list := range c.peerIDToMsgList {
+		if peerID != list.GetPeerID() {
+			c.connectPeer(util.StringsToMultiAddrs(list.P2PAddrs))
 		}
 	}
 }
 
-func (channel *ChatChannel) saveMessage(message message) error {
-	db, err := channel.db.Begin(true)
+// ConnectPeer connect with target peer
+func (c *ChatChannel) connectPeer(multiAddrs []multiaddr.Multiaddr) error {
+	addrInfos, err := peer.AddrInfosFromP2pAddrs(multiAddrs...)
 	if err != nil {
+		log.Printf("error: %v in connectPeer, AddrInfosFromP2pAddrs(multiAddrs...)", err)
 		return err
 	}
-	defer db.Rollback()
-
-	var info peerMessageInfo
-	err = db.From(channel.channelName).One("PeerName", message.Author, &info)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-	if info.MsgDict[message.ID] == false {
-		err = db.From(channel.channelName).From(channel.userName).Save(&message)
+	for _, addrInfo := range addrInfos {
+		err := c.host.Connect(context.Background(), addrInfo)
 		if err != nil {
-			log.Println(err)
-			return err
+			log.Printf("error: %v in connectPeer, AddrInfosFromP2pAddrs(multiAddrs...)", err)
+			continue
 		}
-
-		info.MsgDict[message.ID] = true
-		if message.ID > info.RecordersInfo[channel.userName].LatestMsgID {
-			info.RecordersInfo[channel.userName] = syncInfo{
-				LatestMsgID:  message.ID,
-				LastSyncTime: time.Now().Unix(),
-			}
-		}
-
-		err = db.From(channel.channelName).Update(&info)
-		if err != nil {
-			return err
-		}
+		log.Printf("connected to %s", addrInfo.String())
+		return nil
 	}
-	return db.Commit()
-}
-
-func (channel *ChatChannel) getPeerLatestMsgID(peerName string) (int, error) {
-	var info peerMessageInfo
-	err := channel.db.
-		From(channel.channelName).
-		One("PeerName", peerName, &info)
-	if err != nil {
-		return -1, err
-	}
-	return info.RecordersInfo[peerName].LatestMsgID, nil
-}
-
-func (channel *ChatChannel) updatePeerLatestMsgID(peerName string, newMsgID int, lastSyncTime int64) error {
-	err := channel.db.
-		From(channel.channelName).
-		UpdateField(&peerMessageInfo{PeerName: peerName}, "RecorderInfo", newMsgID)
-
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (channel *ChatChannel) getAllLatestMsgIDs() ([]peerMessageInfo, error) {
-	var info []peerMessageInfo
-	err := channel.db.
-		From(channel.channelName).
-		All(&info)
-	if err != nil {
-		return nil, err
-	}
-	return info, nil
+	return errors.New("connect failed")
 }
