@@ -15,9 +15,9 @@ import (
 	"github.com/libp2p/go-libp2p-core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 
-	"github.com/cyber-rhizome/keygen"
-	msglist "github.com/cyber-rhizome/msglist"
-	util "github.com/cyber-rhizome/utility"
+	"github.com/cyber-rhizome/p2p-channel/keygen"
+	msglist "github.com/cyber-rhizome/p2p-channel/msglist"
+	util "github.com/cyber-rhizome/p2p-channel/utility"
 )
 
 // ChatChannel is a persistent pubsub chat channel

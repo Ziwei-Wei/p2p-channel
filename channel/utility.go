@@ -6,8 +6,8 @@ import (
 	"errors"
 	"log"
 
-	msglist "github.com/cyber-rhizome/msglist"
-	util "github.com/cyber-rhizome/utility"
+	msglist "github.com/cyber-rhizome/p2p-channel/msglist"
+	util "github.com/cyber-rhizome/p2p-channel/utility"
 	"github.com/libp2p/go-libp2p-core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/multiformats/go-multiaddr"

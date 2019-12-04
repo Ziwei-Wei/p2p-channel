@@ -2,7 +2,7 @@ package channel
 
 import (
 	"encoding/json"
-	"github.com/cyber-rhizome/msglist"
+	"github.com/cyber-rhizome/p2p-channel/msglist"
 )
 
 /* constant */

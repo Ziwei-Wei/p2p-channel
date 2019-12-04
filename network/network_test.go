@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	keygen "github.com/cyber-rhizome/keygen"
+	keygen "github.com/cyber-rhizome/p2p-channel/keygen"
 )
 
 func TestCreateHost(t *testing.T) {

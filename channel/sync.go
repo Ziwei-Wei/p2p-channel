@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/cyber-rhizome/msglist"
-	util "github.com/cyber-rhizome/utility"
+	"github.com/cyber-rhizome/p2p-channel/msglist"
+	util "github.com/cyber-rhizome/p2p-channel/utility"
 	"github.com/libp2p/go-libp2p-core/network"
 )
 

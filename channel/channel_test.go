@@ -13,8 +13,8 @@ import (
 	"github.com/libp2p/go-libp2p-core/host"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 
-	"github.com/cyber-rhizome/keygen"
-	"github.com/cyber-rhizome/network"
+	"github.com/cyber-rhizome/p2p-channel/keygen"
+	"github.com/cyber-rhizome/p2p-channel/network"
 )
 
 // func TestTwoPeerInOneLocalChannel(t *testing.T) {
