@@ -10,6 +10,7 @@ func (p *PeerMessageList) saveNewMessageToDB(message *Message) error {
 		log.Printf("error: %v in saveNewMessageToDB, db.Begin failed", err)
 		return err
 	}
+
 	defer tx.Rollback()
 
 	var data PeerData

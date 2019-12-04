@@ -16,9 +16,12 @@ import (
 // CreateHost create create host and pubsub given privKey
 func CreateHost(privKey crypto.PrivKey, prot pnet.Protector, port uint16) (host.Host, error) {
 	opts := []libp2p.Option{
-		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)),
+		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)),
 		libp2p.Identity(privKey),
 		libp2p.PrivateNetwork(prot),
+		libp2p.DefaultTransports,
+		libp2p.DefaultMuxers,
+		libp2p.DefaultSecurity,
 	}
 
 	localHost, err := libp2p.New(context.Background(), opts...)

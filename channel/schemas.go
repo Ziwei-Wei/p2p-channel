@@ -2,10 +2,20 @@ package channel
 
 import (
 	"encoding/json"
-	"github.com/Ziwei-Wei/cyber-rhizome-host/msglist"
+	"github.com/cyber-rhizome/msglist"
 )
 
-/* db hierarchy */
+/* constant */
+const (
+	chatMESSAGE   string = "chat"
+	syncMESSAGE   string = "sync"
+	stateMESSAGE  string = "state"
+	peerJOIN      string = "join"
+	peerCONNECTED string = "connected"
+	peerLEAVE     string = "leave"
+	addPEER       string = "add"
+	unixMinute    int64  = 60
+)
 
 ///////////////////
 /* channel level */
@@ -34,7 +44,7 @@ type docContent struct {
 ////////////////////////////////////
 
 // data sent between users in the channel
-// message types chatMESSAGE, syncMESSAGE, SyncMember, stateMESSAGE
+// message types chatMESSAGE, syncMESSAGE, stateMESSAGE
 type pubsubRawMessage struct {
 	MsgType string
 	Data    json.RawMessage
@@ -44,30 +54,6 @@ type pubsubMessage struct {
 	MsgType string
 	Sender  string
 	Data    json.RawMessage
-}
-
-const (
-	chatMESSAGE  string = "chat"
-	syncMESSAGE  string = "sync"
-	stateMESSAGE string = "state"
-)
-
-///////////////////////////
-/* sync between channels */
-///////////////////////////
-
-// ask for missing messages
-type syncRequest struct {
-	ChannelName   string
-	TargerID      string
-	MissingMsgIDs []int
-}
-
-// response for asking
-type syncResponse struct {
-	ChannelName string
-	TargerID    string
-	MissingMsg  msglist.Message
 }
 
 // sync every 5 minute, or when user log in, send my message latest id list
@@ -89,11 +75,13 @@ type syncMessage struct {
 }
 
 type syncRawState struct {
-	State string
+	P2pAddrs []string
+	State    string
 }
 
 type syncState struct {
 	SenderID string
+	P2pAddrs []string
 	State    string
 }
 
@@ -110,4 +98,20 @@ type chatMessage struct {
 	CreatedAt int64
 }
 
-//////////////////
+///////////////////////////
+/* sync between channels */
+///////////////////////////
+
+// ask for missing messages
+type syncRequest struct {
+	ChannelName   string
+	TargerID      string
+	MissingMsgIDs []int
+}
+
+// response for asking
+type syncResponse struct {
+	ChannelName string
+	TargerID    string
+	MissingMsg  msglist.Message
+}

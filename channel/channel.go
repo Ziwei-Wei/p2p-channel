@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"reflect"
 	"time"
@@ -14,9 +15,9 @@ import (
 	"github.com/libp2p/go-libp2p-core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 
-	"github.com/Ziwei-Wei/cyber-rhizome-host/keygen"
-	msglist "github.com/Ziwei-Wei/cyber-rhizome-host/msglist"
-	util "github.com/Ziwei-Wei/cyber-rhizome-host/utility"
+	"github.com/cyber-rhizome/keygen"
+	msglist "github.com/cyber-rhizome/msglist"
+	util "github.com/cyber-rhizomeutility"
 )
 
 // ChatChannel is a persistent pubsub chat channel
@@ -43,10 +44,17 @@ type ChatChannel struct {
 	stateQueue   chan syncState
 
 	// on handlers
-	onNewMessage func(data interface{})
-	onSync       func(data interface{})
-	onPeerJoin   func(data interface{})
-	onPeerLeave  func(data interface{})
+	onNewMessage    func(c *ChatChannel, data interface{})
+	onSync          func(c *ChatChannel, data interface{})
+	onNewPeer       func(c *ChatChannel, data interface{})
+	onPeerJoin      func(c *ChatChannel, data interface{})
+	onPeerConnected func(c *ChatChannel, data interface{})
+	onPeerLeave     func(c *ChatChannel, data interface{})
+	onUserLeave     func(c *ChatChannel, data interface{})
+
+	// context
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // OpenChannel create a new channel
@@ -58,13 +66,14 @@ func OpenChannel(
 	p *pubsub.PubSub,
 	db *storm.DB,
 ) (*ChatChannel, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	var data channelData
 	err := db.From(channelName).One("ChannelName", channelName, &data)
 	if err != nil {
 		log.Printf("error: %v in OpenChannel, channelData not found", err)
 		return nil, err
 	}
-	sub, err := join(p, channelName)
+	sub, err := subscribeChannel(p, channelName)
 	if err != nil {
 		log.Printf("error: %v in OpenChannel, join failed", err)
 		return nil, err
@@ -105,70 +114,98 @@ func OpenChannel(
 		pubsub:          p,
 		sub:             sub,
 		db:              db.From(channelName),
-		state:           "Join",
+		state:           peerJOIN,
 		pubsubQueue:     make(chan pubsubMessage),
 		chatQueue:       make(chan chatMessage),
 		syncMsgQueue:    make(chan syncMessage),
 		stateQueue:      make(chan syncState),
-		onNewMessage:    func(data interface{}) {},
-		onSync:          func(data interface{}) {},
-		onPeerJoin:      func(data interface{}) {},
-		onPeerLeave:     func(data interface{}) {},
+		onNewMessage:    func(c *ChatChannel, data interface{}) {},
+		onSync:          func(c *ChatChannel, data interface{}) {},
+		onNewPeer:       func(c *ChatChannel, data interface{}) {},
+		onPeerJoin:      func(c *ChatChannel, data interface{}) {},
+		onPeerConnected: func(c *ChatChannel, data interface{}) {},
+		onPeerLeave:     func(c *ChatChannel, data interface{}) {},
+		onUserLeave:     func(c *ChatChannel, data interface{}) {},
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	// connect to know addrs, listen to messages
-	channel.connectAllPeers()
-	channel.host.SetStreamHandler("", channel.handleSyncStream)
-	go channel.listenToPeers(ctx)
-	go channel.syncChannel(ctx)
+	channel.connectAllPeers(ctx)
+	channel.host.SetStreamHandler("/chat/1.0.0", channel.handleSyncStream)
 
-	channel.state = "Alive"
+	go channel.startListeners(ctx)
+	go channel.startHandlers(ctx)
+	go channel.startSync(ctx)
+	go channel.sendHeartBeat(ctx)
 
-	// signal join
 	return &channel, nil
 }
 
 // CreateChannel create a new c to use
 func CreateChannel(
+	port int,
 	channelName string,
 	channelType string,
 	userName string,
 	protector string,
 	db *storm.DB,
 ) error {
+	var data channelData
+	err := db.From(channelName).One("ChannelName", channelName, &data)
+	if err != nil && err.Error() != "not found" {
+		log.Printf("error: %v in CreateChannel, One failed", err)
+		return err
+	}
+
+	if err != nil && err.Error() == "not found" {
+		PrivKey, err := keygen.CreatePrivKey(userName, protector)
+		peerID, err := peer.IDFromPrivateKey(PrivKey)
+		data = channelData{
+			ChannelName: channelName,
+			ChannelType: channelType,
+			PeerList: map[string]struct{}{
+				peerID.Pretty(): struct{}{},
+			},
+		}
+		msglist.New(
+			peerID.Pretty(),
+			userName,
+			util.BuildP2PAddrsFromString(peerID.Pretty(), []string{fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)}),
+			db.From(channelName, peerID.Pretty()),
+		)
+
+		// save to db
+		err = db.From(channelName).Save(&data)
+		if err != nil {
+			log.Printf("error: %v in CreateChannel, Save failed", err)
+			return err
+		}
+		return nil
+	}
+
 	PrivKey, err := keygen.CreatePrivKey(userName, protector)
 	peerID, err := peer.IDFromPrivateKey(PrivKey)
-	channelData := channelData{
-		ChannelName: channelName,
-		ChannelType: channelType,
-		PeerList:    map[string]struct{}{},
-	}
-	log.Println(channelData)
+	data.PeerList[peerID.Pretty()] = struct{}{}
 	msglist.New(
 		peerID.Pretty(),
 		userName,
-		util.BuildP2PAddrsFromString(peerID.Pretty(), []string{"/ip4/127.0.0.1/tcp/6666"}),
+		util.BuildP2PAddrsFromString(peerID.Pretty(), []string{fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)}),
 		db.From(channelName, peerID.Pretty()),
 	)
 
 	// save to db
-	err = db.From(channelName).Save(&channelData)
+	err = db.From(channelName).Save(&data)
 	if err != nil {
 		log.Printf("error: %v in CreateChannel, Save failed", err)
 		return err
 	}
-	return db.Close()
+	return nil
 }
 
 // Send will send message to all members of the channel
 func (c *ChatChannel) Send(content interface{}) error {
 	if reflect.TypeOf(content).Kind() == reflect.String {
-		tx, err := c.db.From(c.channelName).Begin(true)
-		if err != nil {
-			log.Printf("error: %v in Send, transaction failed", err)
-			return err
-		}
-		defer tx.Rollback()
 		now := time.Now().Unix()
 		list := c.peerIDToMsgList[c.userID]
 		newMessage := msglist.Message{
@@ -180,44 +217,44 @@ func (c *ChatChannel) Send(content interface{}) error {
 		}
 		list.Add(newMessage)
 		list.Save()
+
 		rawMessage := chatRawMessage{
 			ID:        newMessage.ID,
 			Content:   content.(string),
 			CreatedAt: now,
 		}
 
-		tx.Commit()
-		if err != nil {
-			log.Printf("error: %v in Send, transaction failed", err)
-			return err
-		}
-
-		jsonMsg, err := json.Marshal(&rawMessage)
+		msgData, err := json.Marshal(&rawMessage)
 		if err != nil {
 			log.Printf("error: %v in Send, Marshal(&message) failed", err)
 			return err
 		}
 
-		err = c.pubsub.Publish(c.channelName, jsonMsg)
-		if err != nil {
-			log.Printf("error: %v in Send, Publish(channel.channelName, jsonChat) failed", err)
-			return err
+		pubsubMessage := pubsubRawMessage{
+			MsgType: chatMESSAGE,
+			Data:    msgData,
 		}
-		return nil
+
+		return c.sendPeerMessage(pubsubMessage)
 	}
-	return errors.New("wrong type")
+	err := errors.New("wrong type")
+	log.Printf("error: %v in Send, Publish(channel.channelName, jsonChat) failed", err)
+	return err
 }
 
 // Leave will leave the current channel(can not receive message anymore)
 func (c *ChatChannel) Leave() {
-	c.state = "Leave"
+	c.state = peerLEAVE
+	c.onUserLeave(c, c.state)
 	c.sendStateInfo()
 	c.sub.Cancel()
+	c.cancel()
 	c.db.Commit()
+	log.Println("--> channel closed")
 }
 
-// On will assign handlers to NewMessage, PeerJoin, PeerLeave
-func (c *ChatChannel) On(event string, handler func(data interface{})) error {
+// On will assign handlers to NewMessage, Sync, NewPeer, PeerJoin, PeerConnected, PeerLeave, UserLeave
+func (c *ChatChannel) On(event string, handler func(c *ChatChannel, data interface{})) error {
 	switch event {
 	case "NewMessage":
 		c.onNewMessage = handler
@@ -225,14 +262,23 @@ func (c *ChatChannel) On(event string, handler func(data interface{})) error {
 	case "Sync":
 		c.onSync = handler
 		break
+	case "NewPeer":
+		c.onNewPeer = handler
+		break
 	case "PeerJoin":
 		c.onPeerJoin = handler
 		break
+	case "PeerConnected":
+		c.onPeerConnected = handler
+		break
 	case "PeerLeave":
-		c.onPeerJoin = handler
+		c.onPeerLeave = handler
+		break
+	case "UserLeave":
+		c.onUserLeave = handler
 		break
 	default:
-		return errors.New("event is not supported")
+		return errors.New(fmt.Errorf("event %s is not supported", event).Error())
 	}
 	return nil
 }
@@ -245,6 +291,7 @@ func (c *ChatChannel) AddPeer(peerID string, peerName string, p2pAddrs []string)
 		return err
 	}
 	c.peerIDToMsgList[peerID] = list
+
 	peerList := map[string]struct{}{}
 	for peer := range c.peerIDToMsgList {
 		peerList[peer] = struct{}{}
@@ -259,7 +306,8 @@ func (c *ChatChannel) AddPeer(peerID string, peerName string, p2pAddrs []string)
 		return err
 	}
 
-	c.connectPeer(util.StringsToMultiAddrs(p2pAddrs))
+	c.connectPeer(context.Background(), util.StringsToMultiAddrs(p2pAddrs))
+	c.onNewPeer(c, peerID)
 	return nil
 }
 

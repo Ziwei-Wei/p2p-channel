@@ -8,162 +8,35 @@ import (
 	"sort"
 	"time"
 
-	"github.com/Ziwei-Wei/cyber-rhizome-host/msglist"
-	util "github.com/Ziwei-Wei/cyber-rhizome-host/utility"
+	"github.com/cyber-rhizome/msglist"
+	util "github.com/cyber-rhizome/utility"
+	"github.com/libp2p/go-libp2p-core/network"
 )
 
-const unixMinute int64 = 60
-
 // sync channel every 5 minute
-func (c *ChatChannel) syncChannel(ctx context.Context) {
+func (c *ChatChannel) startSync(ctx context.Context) {
+	log.Println("---> sync started")
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("stop sync")
+			return
 		default:
-			go c.sendSyncInfo()
-			go c.sendSyncMsgInfoToPeers(100)
-			time.Sleep(5 * time.Minute)
+			go c.sendAllPeerData()
+			c.requestSyncFromPeers(ctx, 100)
+			time.Sleep(20 * time.Second)
 		}
 	}
 }
 
-// sync channel msgs with a buffer limit
-func (c *ChatChannel) sendSyncMsgInfoToPeers(limit int) {
-	counter := make(chan int)
-	msgCount := 0
+func (c *ChatChannel) sendAllPeerData() error {
 	for _, list := range c.peerIDToMsgList {
-		go c.sendSyncMsgInfoToPeer(list, counter)
-		msgCount += <-counter
-		if msgCount > limit {
-			for msgCount > limit/2 {
-				msgCount += <-counter
-			}
-		}
-	}
-
-}
-
-func (c *ChatChannel) sendSyncMsgInfoToPeer(list *msglist.PeerMessageList, counter chan int) error {
-	if list.GetPeerID() != c.userID {
-		missedMsgIDs, err := list.GetMissedMsgIDs()
-
-		if err != nil {
-			return err
-		}
-
-		if len(missedMsgIDs) > 0 {
-			counter <- len(missedMsgIDs)
-			latencyToPeer := make(map[int]string)
-			latencies := make([]int, len(c.peerIDToMsgList))
-			// find 2 peer with least latency + author
-			for id := range c.peerIDToMsgList {
-				peerID, _ := util.StringToPeerID(id)
-				t := c.host.Peerstore().LatencyEWMA(peerID).Milliseconds()
-				latencies = append(latencies, int(t))
-				latencyToPeer[int(t)] = id
-			}
-
-			count := 1
-			max := 3
-			sort.Ints(latencies)
-			peerIDToSync := make([]string, max)
-			peerIDToSync[0] = list.GetPeerID()
-			for i := 0; i < len(latencies); i++ {
-				if count < max {
-					peerIDToSync[i+1] = latencyToPeer[latencies[i]]
-					count++
-				}
-			}
-
-			for _, peerIDString := range peerIDToSync {
-				err := c.connectPeer(util.StringsToMultiAddrs(list.P2PAddrs))
-				if err != nil {
-					log.Printf("Error: %v at syncWithPeer, connectPeer", err)
-					continue
-				}
-
-				peerID, err := util.StringToPeerID(peerIDString)
-				if err != nil {
-					log.Printf("Error: %v at syncWithPeer, StringToPeerID(peerIDString)", err)
-					continue
-				}
-
-				stream, err := c.host.NewStream(context.Background(), peerID)
-				if err != nil {
-					log.Printf("Error: %v at syncWithPeer, NewStream(context.Background(), peerID)", err)
-					continue
-				}
-
-				rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-				syncReq := syncRequest{
-					ChannelName:   c.channelName,
-					TargerID:      list.GetPeerID(),
-					MissingMsgIDs: missedMsgIDs,
-				}
-				data, err := json.Marshal(&syncReq)
-				if err != nil {
-					continue
-				}
-				data = append(data, '\n')
-				rw.Write(data)
-				rw.Flush()
-				for {
-					data, err := rw.ReadBytes('\n')
-					if err != nil {
-						print(err)
-					}
-					if data[0] == '\n' {
-						break
-					}
-					var syncRes syncResponse
-					err = json.Unmarshal(data[:len(data)-1], &syncRes)
-					if err != nil {
-						print(err)
-					}
-					list.Add(syncRes.MissingMsg)
-					break
-				}
-				rw.Write([]byte{'\n'})
-				rw.Flush()
-				stream.Close()
-				break
-			}
-			counter <- -len(missedMsgIDs)
-		}
+		c.sendPeerData(list)
 	}
 	return nil
 }
 
-// should be dynamic in future
-func (c *ChatChannel) sendHeartBeat() {
-	for {
-		c.sendStateInfo()
-		time.Sleep(5 * time.Second)
-	}
-}
-
-func (c *ChatChannel) sendStateInfo() error {
-	state := syncRawState{
-		State: c.state,
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		log.Printf("error: %v at sendStateInfo, Marshal(state)", err)
-		return err
-	}
-	err = c.sendPeerMessage(pubsubRawMessage{
-		MsgType: "State",
-		Data:    data,
-	})
-	if err != nil {
-		log.Printf("error: %v at sendStateInfo, sendPeerMessage", err)
-		return err
-	}
-	return nil
-}
-
-func (c *ChatChannel) sendSyncInfo() error {
-	list := c.peerIDToMsgList[c.userID]
+func (c *ChatChannel) sendPeerData(list *msglist.PeerMessageList) error {
 	syncMsg := syncRawMessage{
 		TargerID:     list.GetPeerID(),
 		TargetName:   list.PeerName,
@@ -180,21 +53,182 @@ func (c *ChatChannel) sendSyncInfo() error {
 		MsgType: syncMESSAGE,
 		Data:    data,
 	}
-	c.sendPeerMessage(msg)
+	return c.sendPeerMessage(msg)
+}
+
+// sync channel msgs with a buffer limit
+func (c *ChatChannel) requestSyncFromPeers(ctx context.Context, limit int) {
+	msgCount := 0
+	for _, list := range c.peerIDToMsgList {
+		go c.requestSyncFromPeer(ctx, list, &msgCount)
+		if msgCount > limit {
+			for msgCount > limit/2 {
+				if msgCount <= limit/2 {
+					break
+				}
+			}
+		}
+	}
+}
+
+func (c *ChatChannel) requestSyncFromPeer(ctx context.Context, list *msglist.PeerMessageList, counter *int) error {
+	if list.GetPeerID() != c.userID {
+		missedMsgIDs, err := list.GetMissedMsgIDs()
+
+		if err != nil {
+			return err
+		}
+
+		if len(missedMsgIDs) > 0 {
+			log.Println("syncMessages")
+			*counter += len(missedMsgIDs)
+			latencyToPeer := make(map[int]string)
+			latencies := make([]int, len(c.peerIDToMsgList))
+			// find 2 peer with least latency + author
+			for id := range c.peerIDToMsgList {
+				peerID, _ := util.StringToPeerID(id)
+				t := c.host.Peerstore().LatencyEWMA(peerID).Milliseconds()
+				latencies = append(latencies, int(t))
+				latencyToPeer[int(t)] = id
+			}
+
+			count := 1
+			max := 3
+			sort.Ints(latencies)
+			var peerIDToSync []string
+			peerIDToSync = append(peerIDToSync, list.GetPeerID())
+			for i := 0; i < len(latencies); i++ {
+				if count < max && list.GetPeerID() != latencyToPeer[latencies[i]] {
+					peerIDToSync = append(peerIDToSync, latencyToPeer[latencies[i]])
+					count++
+				}
+			}
+
+			for _, peerIDString := range peerIDToSync {
+				err := c.connectPeer(ctx, util.StringsToMultiAddrs(list.P2PAddrs))
+				if err != nil {
+					log.Printf("Error: %v at requestSyncFromPeer, connectPeer", err)
+					continue
+				}
+
+				peerID, err := util.StringToPeerID(peerIDString)
+				if err != nil {
+					log.Printf("Error: %v at requestSyncFromPeer, StringToPeerID(peerIDString)", err)
+					continue
+				}
+
+				stream, err := c.host.NewStream(context.Background(), peerID, "/chat/1.0.0")
+				if err != nil {
+					log.Printf("Error: %v at requestSyncFromPeer, NewStream(context.Background(), peerID)", err)
+					continue
+				}
+
+				rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
+				syncReq := syncRequest{
+					ChannelName:   c.channelName,
+					TargerID:      list.GetPeerID(),
+					MissingMsgIDs: missedMsgIDs,
+				}
+				data, err := json.Marshal(&syncReq)
+				if err != nil {
+					continue
+				}
+				data = append(data, '\n')
+				_, err = rw.Write(data)
+				if err != nil {
+					log.Printf("error: %v in requestSyncFromPeer, Write failed", err)
+					continue
+				}
+				rw.Flush()
+				for {
+					data, err := rw.ReadBytes('\n')
+					if err != nil {
+						log.Printf("error: %v in requestSyncFromPeer, ReadBytes failed", err)
+						continue
+					}
+					if data[0] == '\n' {
+						break
+					}
+					var syncRes syncResponse
+					err = json.Unmarshal(data[:len(data)-1], &syncRes)
+					if err != nil {
+						log.Printf("error: %v in requestSyncFromPeer, Unmarshal failed", err)
+						continue
+					}
+					list.Add(syncRes.MissingMsg)
+				}
+				rw.Write([]byte{'\n'})
+				rw.Flush()
+				stream.Close()
+				break
+			}
+			c.onSync(c, missedMsgIDs)
+			*counter -= len(missedMsgIDs)
+		}
+	}
 	return nil
 }
 
-func (c *ChatChannel) sendPeerMessage(message pubsubRawMessage) error {
-	data, err := json.Marshal(&message)
-	if err != nil {
-		log.Printf("error: %v at sendPeerMessage, Marshal(&message)", err)
-		return err
-	}
+func (c *ChatChannel) handleSyncStream(stream network.Stream) {
+	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
+	TTL := time.Now().Add(time.Minute)
 
-	err = c.pubsub.Publish(c.channelName, data)
-	if err != nil {
-		log.Printf("error: %v at sendPeerMessage, Publish(c.cName, data)", err)
-		return err
+	for {
+		if time.Now().After(TTL) {
+			stream.Close()
+			return
+		}
+
+		data, err := rw.ReadBytes('\n')
+		if err != nil {
+			log.Printf("error: %v in handleSyncStream, ReadBytes failed", err)
+			continue
+		}
+
+		var req syncRequest
+		err = json.Unmarshal(data[:len(data)-1], &req)
+		if err != nil {
+			log.Printf("error: %v in handleSyncStream, Unmarshal failed", err)
+			continue
+		}
+
+		if req.ChannelName != c.channelName {
+			log.Printf("should be in the same channel")
+			return
+		}
+
+		list := c.peerIDToMsgList[req.TargerID]
+		msgs, err := list.FindMessage(req.MissingMsgIDs)
+
+		for _, msg := range msgs {
+			rawRes := syncResponse{
+				ChannelName: c.channelName,
+				TargerID:    req.TargerID,
+				MissingMsg:  msg,
+			}
+			data, err := json.Marshal(&rawRes)
+			if err != nil {
+				log.Printf("error: %v in handleSyncStream, Marshal failed", err)
+				continue
+			}
+			data = append(data, '\n')
+			rw.Write(data)
+			rw.Flush()
+		}
+		rw.Write([]byte{'\n'})
+		rw.Flush()
+
+		TTL = time.Now().Add(time.Minute)
+		for {
+			data, err := rw.ReadBytes('\n')
+			if err != nil {
+				log.Printf("error: %v in requestSyncFromPeer, ReadBytes failed", err)
+				return
+			}
+			if data[0] == '\n' || time.Now().After(TTL) {
+				stream.Close()
+				return
+			}
+		}
 	}
-	return nil
 }

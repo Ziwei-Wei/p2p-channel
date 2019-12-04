@@ -5,7 +5,6 @@ import (
 	"log"
 
 	"github.com/asdine/storm/v3"
-	"github.com/asdine/storm/v3/q"
 )
 
 /**
@@ -102,14 +101,17 @@ func (p *PeerMessageList) Add(message Message) error {
 // FindMessage find by id in existing messages
 func (p *PeerMessageList) FindMessage(messageIDs []int) ([]Message, error) {
 	var messages []Message
-	matchers := make([]q.Matcher, len(messageIDs))
-	for i, messageID := range messageIDs {
+	var message Message
+	for _, messageID := range messageIDs {
 		if messageID <= p.LatestMsgID {
-			matchers[i] = q.Eq("ID", messageID)
+			err := p.db.One("ID", messageID, &message)
+			if err != nil {
+				// log.Printf("error: %v in FindMessage, id:%d from:%s failed", err, messageID, p.PeerName)
+			}
+			messages = append(messages, message)
 		}
 	}
-	err := p.db.Select(q.Or(matchers...)).Find(&messages)
-	return messages, err
+	return messages, nil
 }
 
 // GetMissedMsgIDs for synchronization purpose
@@ -135,13 +137,13 @@ func (p *PeerMessageList) GetPeerID() string {
 }
 
 // GetPeerData retrieve the PeerDataI
-func (p *PeerMessageList) GetPeerData() PeerData {
+func (p *PeerMessageList) GetPeerData() *PeerData {
 	var data PeerData
 	err := p.db.One("PeerID", p.peerID, &data)
 	if err != nil {
 		log.Printf("error: %v in GetPeerData, db.One failed", err)
 	}
-	return data
+	return &data
 }
 
 // Save msg list info to disk
@@ -155,6 +157,16 @@ func (p *PeerMessageList) Save() error {
 	})
 	if err != nil {
 		log.Printf("error: %v in Save, Update failed", err)
+		return err
+	}
+	return nil
+}
+
+// UpdatePeerData list info to disk
+func (p *PeerMessageList) UpdatePeerData(data *PeerData) error {
+	err := p.db.Save(data)
+	if err != nil {
+		log.Printf("error: %v in UpdatePeerData, Save failed", err)
 		return err
 	}
 	return nil
