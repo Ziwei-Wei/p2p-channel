@@ -14,7 +14,7 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 
 	"github.com/cyber-rhizome/keygen"
-	"github.com/cyber-rhizomenetwork"
+	"github.com/cyber-rhizome/network"
 )
 
 // func TestTwoPeerInOneLocalChannel(t *testing.T) {

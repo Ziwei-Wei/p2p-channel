@@ -17,7 +17,7 @@ import (
 
 	"github.com/cyber-rhizome/keygen"
 	msglist "github.com/cyber-rhizome/msglist"
-	util "github.com/cyber-rhizomeutility"
+	util "github.com/cyber-rhizome/utility"
 )
 
 // ChatChannel is a persistent pubsub chat channel
